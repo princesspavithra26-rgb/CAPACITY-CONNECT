@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Login | CAPACITY CONNECT</title>
+<link rel="stylesheet" href="../css/style.css"></head><div class="auth-page"><div class="auth-layout">
+<div class="auth-side"><a class="brand" href="INDEX.html">CAPACITY CONNECT</a><h1>Learning starts here.</h1><p>A connected learning environment for training, assessment and competency development.</p><ul><li>✓ Courses and learning programs</li><li>✓ Assessments and progress tracking</li><li>✓ Competency development</li><li>✓ Role-based access</li></ul></div>
+<div class="auth-box"><h2>Welcome back</h2><p class="auth-sub">Sign in to access the learning portal and the tools available for your role.</p><form class="form" onsubmit="loginUser(event)">
+<label>Email<input id="email" type="email" required placeholder="Enter your email"></label>
+<label>Password<input type="password" required placeholder="Enter your password"></label>
+<label>Role<select id="role"><option value="trainee">Trainee</option><option value="trainer">Trainer</option><option value="administrator">Administrator</option></select></label>
+<button class="btn primary">Sign In</button><div id="msg"></div></form><p class="auth-foot">New to CAPACITY CONNECT? <a href="register.html">Create an account</a></p><p class="auth-foot"><a href="INDEX.html">← Back to home</a></p></div>
+</div></div><script src="../js/api.js"></script><script src="../js/app.js"></script><script>
+async function loginUser(e){
+  e.preventDefault();
+  const message=document.getElementById("msg");
+  const email=document.getElementById("email").value.trim();
+  const password=document.querySelector('input[type="password"]').value;
+  const selectedRole=document.getElementById("role").value;
+  message.innerHTML='<div class="notice">Signing in...</div>';
+  try {
+    const result=await CCAPI.request('/auth/login',{method:'POST',body:{email,password}});
+    if(result.user.role!==selectedRole){
+      message.innerHTML='<div class="notice warning">This account belongs to the '+CCAPI.escapeHtml(result.user.role)+' role. Select the matching role and sign in again.</div>';
+      return;
+    }
+    CCAPI.saveSession(result);
+    const pages={trainee:'trainee-dashboard.html',trainer:'trainer-dashboard.html',administrator:'admin-dashboard.html'};
+    message.innerHTML='<div class="notice success">Login successful. Opening your dashboard...</div>';
+    setTimeout(()=>location.href=pages[result.user.role],350);
+  } catch(error) {
+    message.innerHTML='<div class="notice warning">'+CCAPI.escapeHtml(error.message)+'</div>';
+  }
+}
+</script></body></html>
