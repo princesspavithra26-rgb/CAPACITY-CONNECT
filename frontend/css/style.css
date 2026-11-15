@@ -160,3 +160,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .cc-quiz-option input { margin-top: 4px; accent-color: #2864e8; }
 .btn.danger { color: #b42318; border: 1px solid #f2b8b5; background: #fff; }
 .btn.danger:hover { background: #fff4f2; }
+
+/* Unread notification count in the portal navigation. */
+.nav a { position: relative; }
+.cc-nav-unread { display: inline-flex; align-items: center; justify-content: center; min-width: 19px; height: 19px; padding: 0 5px; margin-left: auto; border-radius: 999px; background: #e5484d; color: #fff; font-size: 11px; font-weight: 700; line-height: 1; }
+.cc-nav-unread[hidden] { display: none; }

@@ -1,0 +1,212 @@
+CREATE DATABASE IF NOT EXISTS capacity_connect CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE capacity_connect;
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  email VARCHAR(190) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('trainee','trainer','administrator') NOT NULL DEFAULT 'trainee',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+  user_id BIGINT UNSIGNED PRIMARY KEY,
+  language VARCHAR(40) DEFAULT 'English',
+  notification_preference VARCHAR(40) DEFAULT 'All notifications',
+  learning_preference VARCHAR(60) DEFAULT 'All learning opportunities',
+  professional_summary TEXT,
+  CONSTRAINT fk_preferences_user FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS courses (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(180) NOT NULL,
+  description TEXT,
+  category VARCHAR(120),
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  difficulty VARCHAR(40) DEFAULT 'Beginner',
+  duration VARCHAR(80),
+  max_learners INT UNSIGNED NULL,
+  objectives TEXT,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_courses_creator FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  INDEX idx_courses_status (status),
+  INDEX idx_courses_creator (created_by)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS course_modules (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  course_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  description TEXT,
+  sort_order INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_modules_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  INDEX idx_modules_course_order (course_id, sort_order)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS enrollments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  course_id BIGINT UNSIGNED NOT NULL,
+  trainee_id BIGINT UNSIGNED NOT NULL,
+  enrolled_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_enrollment (course_id, trainee_id),
+  CONSTRAINT fk_enroll_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_enroll_trainee FOREIGN KEY (trainee_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS module_completions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  module_id BIGINT UNSIGNED NOT NULL,
+  trainee_id BIGINT UNSIGNED NOT NULL,
+  completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_module_completion (module_id, trainee_id),
+  CONSTRAINT fk_completion_module FOREIGN KEY (module_id) REFERENCES course_modules(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_completion_trainee FOREIGN KEY (trainee_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS resources (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  course_id BIGINT UNSIGNED NOT NULL,
+  module_id BIGINT UNSIGNED NULL,
+  title VARCHAR(180) NOT NULL,
+  description TEXT,
+  file_url TEXT NOT NULL,
+  resource_type ENUM('document','video','link','other') NOT NULL DEFAULT 'link',
+  uploaded_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_resources_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_resources_module FOREIGN KEY (module_id) REFERENCES course_modules(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_resources_uploader FOREIGN KEY (uploaded_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  INDEX idx_resources_course (course_id),
+  INDEX idx_resources_module (module_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS resource_visits (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  resource_id BIGINT UNSIGNED NOT NULL,
+  trainee_id BIGINT UNSIGNED NOT NULL,
+  visited_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_resource_visit (resource_id, trainee_id),
+  CONSTRAINT fk_resource_visit_resource FOREIGN KEY (resource_id) REFERENCES resources(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_resource_visit_trainee FOREIGN KEY (trainee_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS competencies (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(180) NOT NULL UNIQUE,
+  description TEXT,
+  category VARCHAR(120),
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_competencies_creator FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS course_competencies (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  course_id BIGINT UNSIGNED NOT NULL,
+  competency_id BIGINT UNSIGNED NOT NULL,
+  UNIQUE KEY uq_course_competency (course_id, competency_id),
+  CONSTRAINT fk_cc_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_cc_competency FOREIGN KEY (competency_id) REFERENCES competencies(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS assessments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  course_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  instructions TEXT,
+  total_marks DECIMAL(8,2) NOT NULL DEFAULT 100,
+  due_date DATETIME NULL,
+  questions_json JSON NULL,
+  answer_key_json JSON NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_assess_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_assess_creator FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  INDEX idx_assess_course (course_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS assessment_submissions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  assessment_id BIGINT UNSIGNED NOT NULL,
+  trainee_id BIGINT UNSIGNED NOT NULL,
+  answers_json JSON NOT NULL,
+  auto_check_json JSON NULL,
+  marks_obtained DECIMAL(8,2) NULL,
+  feedback TEXT,
+  reviewed_by BIGINT UNSIGNED NULL,
+  submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  reviewed_at TIMESTAMP NULL,
+  UNIQUE KEY uq_submission (assessment_id, trainee_id),
+  CONSTRAINT fk_submission_assessment FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_submission_trainee FOREIGN KEY (trainee_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_submission_reviewer FOREIGN KEY (reviewed_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS training_programs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(180) NOT NULL,
+  description TEXT,
+  goal TEXT,
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_program_creator FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS program_courses (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  program_id BIGINT UNSIGNED NOT NULL,
+  course_id BIGINT UNSIGNED NOT NULL,
+  UNIQUE KEY uq_program_course (program_id, course_id),
+  CONSTRAINT fk_program_course_program FOREIGN KEY (program_id) REFERENCES training_programs(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_program_course_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  course_id BIGINT UNSIGNED NULL,
+  feedback_type VARCHAR(80) NOT NULL DEFAULT 'General',
+  rating TINYINT UNSIGNED NOT NULL,
+  subject VARCHAR(180),
+  comments TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_feedback_user FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_feedback_course FOREIGN KEY (course_id) REFERENCES courses(id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(180) NOT NULL,
+  message TEXT NOT NULL,
+  category VARCHAR(80) NOT NULL DEFAULT 'Announcement',
+  target_role ENUM('trainee','trainer','administrator') NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_notification_creator FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  notification_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  read_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_notification_read (notification_id, user_id),
+  CONSTRAINT fk_read_notification FOREIGN KEY (notification_id) REFERENCES notifications(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_read_user FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key VARCHAR(100) PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_by BIGINT UNSIGNED NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_setting_updater FOREIGN KEY (updated_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;

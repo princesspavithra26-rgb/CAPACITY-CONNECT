@@ -44,7 +44,7 @@
       const submit = $('button[type="submit"]', form);
       const message = $('.cc-modal-message', form);
       submit.disabled = true; submit.textContent = 'Saving…'; message.textContent = '';
-      try { await onSubmit(new FormData(form), overlay); close(); toast('Saved successfully.'); }
+      try { await onSubmit(new FormData(form), overlay); close(); toast('Saved successfully.'); await refreshNotificationBadge(); }
       catch (error) { message.innerHTML = `<div class="notice warning">${esc(error.message)}</div>`; submit.disabled = false; submit.textContent = submitLabel; }
     });
     const first = $('input,select,textarea', overlay); if (first) first.focus();
@@ -301,8 +301,18 @@
   async function renderCompetencies() {
     const panel = findPrimaryPanel(); if (!panel) return;
     try {
-      const rows = (await api().get('/competencies')).competencies || [];
-      updateStats({ Competencies: rows.length, 'Competencies Tracked': rows.length, Developed: 0, 'Skill Gaps': 0 });
+      const [data, metrics] = await Promise.all([
+        api().get('/competencies'),
+        api().get('/competencies/summary').catch(() => ({ summary: {} }))
+      ]);
+      const rows = data.competencies || [];
+      const m = metrics.summary || {};
+      if (user?.role === 'administrator') {
+        updateStats({ Competencies: m.competencies ?? rows.length, 'Learners Assessed': m.learners_assessed ?? 0,
+          'Average Level': m.average_level == null ? '—' : `${Number(m.average_level).toFixed(1)}%`, 'Skill Gaps': m.skill_gaps ?? 0 });
+      } else {
+        updateStats({ Competencies: rows.length, 'Competencies Tracked': rows.length, Developed: 0, 'Skill Gaps': m.skill_gaps ?? 0 });
+      }
       const box = liveContainer(panel, 'cc-competency-grid');
       box.innerHTML = rows.length ? `<div class="grid3">${rows.map((c) => cardMarkup({ icon: '🎯', title: c.name, subtitle: c.description || 'Competency definition', meta: c.category || 'General' })).join('')}</div>` : '<p class="cc-empty-note">No competency definitions have been added yet.</p>';
       if (user?.role !== 'trainee') await appendCompetencyMapping(panel, rows);
@@ -328,7 +338,7 @@
 
   async function openCompetencyModal() {
     showModal('Add competency', `${field('Competency name', 'name', 'text', { required: true })}${field('Category', 'category', 'text', { placeholder: 'Technical Skills, Professional Skills...' })}${field('Description', 'description', 'textarea')}`,
-      async (fd) => api().post('/competencies', { name: fd.get('name'), category: fd.get('category'), description: fd.get('description') }));
+      async (fd) => { await api().post('/competencies', { name: fd.get('name'), category: fd.get('category'), description: fd.get('description') }); await renderCompetencies(); await refreshNotificationBadge(); });
   }
 
   async function renderAssessments() {
@@ -337,10 +347,7 @@
       const data = await api().get('/assessments');
       const rows = data.assessments || [];
       const box = liveContainer(panel, 'cc-assessment-list');
-      let submissions = [];
-      if (user.role === 'trainee') {
-        submissions = (await api().get('/assessments/submissions')).submissions || [];
-      }
+      const submissions = (await api().get('/assessments/submissions')).submissions || [];
       const submissionByAssessment = new Map(submissions.map((s) => [Number(s.assessment_id), s]));
       const reviewed = submissions.filter((s) => s.marks_obtained !== null && s.marks_obtained !== undefined);
       const averageScore = reviewed.length
@@ -844,11 +851,32 @@
     const panel = findPrimaryPanel(); if (!panel) return;
     try {
       const data = await api().get('/reports/summary'); const s = data.summary || {};
-      updateStats({ 'Learning Reports': s.courses, 'Training Reports': s.learners, 'Assessment Reports': s.assessments, 'Competency Reports': '—', 'Training Programs': s.courses, 'Active Learners': s.learners, 'Completion': '—', 'Average Score': s.average_score == null ? '—' : Number(s.average_score).toFixed(1) });
+      updateStats({
+        'Learning Reports': s.courses ?? 0,
+        'Training Reports': s.programs ?? 0,
+        'Assessment Reports': s.assessments ?? 0,
+        'Competency Reports': s.competencies ?? 0,
+        'Training Programs': s.programs ?? 0,
+        'Active Learners': s.learners ?? 0,
+        Completion: s.completion_rate == null ? '—' : `${Number(s.completion_rate).toFixed(1)}%`,
+        'Average Score': s.average_score == null ? '—' : Number(s.average_score).toFixed(1)
+      });
       const box = liveContainer(panel, 'cc-report-summary');
-      box.innerHTML = `<div class="grid3">${cardMarkup({ title: 'Courses', subtitle: 'Courses created in the platform', meta: s.courses || 0 })}${cardMarkup({ title: 'Learners', subtitle: 'Unique enrolled learners', meta: s.learners || 0 })}${cardMarkup({ title: 'Assessment submissions', subtitle: 'Submitted assessment attempts', meta: s.submissions || 0 })}</div>`;
+      box.innerHTML = `<div class="grid3">${cardMarkup({ title: 'Courses', subtitle: `${s.published ?? 0} published · ${s.courses ?? 0} total`, meta: s.courses ?? 0 })}${cardMarkup({ title: 'Training programs', subtitle: 'Programs created in the platform', meta: s.programs ?? 0 })}${cardMarkup({ title: 'Learners', subtitle: 'Unique enrolled learners', meta: s.learners ?? 0 })}${cardMarkup({ title: 'Assessments', subtitle: `${s.submissions ?? 0} learner submissions`, meta: s.assessments ?? 0 })}${cardMarkup({ title: 'Assessment average', subtitle: 'Average marks across reviewed submissions', meta: s.average_score == null ? '—' : Number(s.average_score).toFixed(1) })}${cardMarkup({ title: 'Competencies', subtitle: `${s.learners_assessed ?? 0} learners assessed · ${s.skill_gaps ?? 0} skill gaps`, meta: s.competencies ?? 0 })}</div>`;
+      const stats = $$('.stats .stat');
+      stats.forEach((stat) => {
+        const label = $('small', stat)?.textContent.trim().toLowerCase();
+        const descriptions = {
+          'learning reports': `${s.courses ?? 0} courses recorded`,
+          'training reports': `${s.programs ?? 0} training programs recorded`,
+          'assessment reports': `${s.submissions ?? 0} submissions recorded`,
+          'competency reports': `${s.competencies ?? 0} competencies recorded`
+        };
+        if (descriptions[label] && $('span', stat)) $('span', stat).textContent = descriptions[label];
+      });
     } catch (error) { toast(error.message, 'error'); }
   }
+
 
   async function handleClick(event) {
     const target = event.target.closest('button, a'); if (!target) return;
@@ -969,13 +997,26 @@
       catch (error) { toast(error.message, 'error'); }
     }
     if (target.dataset.readNotification) {
-      try { await api().post(`/notifications/${target.dataset.readNotification}/read`, {}); renderNotifications(); }
+      try { await api().post(`/notifications/${target.dataset.readNotification}/read`, {}); await renderNotifications(); await refreshNotificationBadge(); }
       catch (error) { toast(error.message, 'error'); }
     }
     if (target.dataset.programCourses) {
       const response = await api().get(`/programs/${target.dataset.programCourses}/courses`);
       showModal('Program courses', `<div class="cc-readonly-list">${(response.courses || []).map((c) => `<p>${esc(c.title)} · ${esc(c.category || '')}</p>`).join('') || '<p>No courses linked.</p>'}</div>`, async () => {}, 'Close');
     }
+  }
+
+  async function refreshNotificationBadge() {
+    try {
+      const rows = (await api().get('/notifications')).notifications || [];
+      const unread = rows.filter((item) => !Number(item.is_read)).length;
+      $$('a[href*="notifications.html"]').forEach((link) => {
+        let badge = $('.cc-nav-unread', link);
+        if (!badge) { badge = document.createElement('span'); badge.className = 'cc-nav-unread'; link.appendChild(badge); }
+        badge.textContent = unread > 99 ? '99+' : String(unread);
+        badge.hidden = unread === 0;
+      });
+    } catch (_) { /* Badge is supplementary; the notifications page shows API errors. */ }
   }
 
   async function init() {
@@ -988,7 +1029,7 @@
     });
     document.addEventListener('change', async (event) => {
       if (event.target.matches('[data-course-status]')) {
-        try { await api().patch(`/courses/${event.target.dataset.courseStatus}`, { status: event.target.value }); toast('Course status updated.'); }
+        try { await api().patch(`/courses/${event.target.dataset.courseStatus}`, { status: event.target.value }); toast('Course status updated.'); await refreshNotificationBadge(); }
         catch (error) { toast(error.message, 'error'); }
       }
     });
@@ -1004,6 +1045,8 @@
       }
       const profile = $('.profile');
       if (profile) { const strong = $('strong', profile); const span = $('span', profile); if (strong) strong.textContent = activeUser.name; if (span) span.textContent = `${activeUser.role[0].toUpperCase() + activeUser.role.slice(1)} · ${activeUser.email}`; }
+      await refreshNotificationBadge();
+      window.setInterval(refreshNotificationBadge, 45000);
       await runPage();
     } catch (error) {
       api().clearSession(); toast(error.message, 'error'); setTimeout(() => { location.href = 'login.html'; }, 900);

@@ -94,6 +94,15 @@ function authorize(...roles) {
 }
 
 function sendRows(res, key, rows) { res.json({ success: true, [key]: rows }); }
+
+// Store platform-wide activity notifications so each signed-in role can read them.
+async function notifyEveryone(title, message, category, createdBy) {
+  await pool.execute(
+    'INSERT INTO notifications (title, message, category, target_role, created_by) VALUES (?, ?, ?, NULL, ?)',
+    [title, message, category, createdBy]
+  );
+}
+
 function normalizeEmail(email) { return String(email || '').trim().toLowerCase(); }
 function validId(value) { return /^\d+$/.test(String(value)); }
 
@@ -289,11 +298,12 @@ app.post('/api/courses', authenticate, authorize('trainer', 'administrator'), as
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [String(title).trim(), description, category, status, difficulty, duration, max_learners || null, objectives, req.user.id]
   );
+  await notifyEveryone('New course added', `${String(title).trim()} has been added to the learning portal${status === 'published' ? ' and is now available' : ' and is awaiting publication'}.`, 'Course', req.user.id);
   res.status(201).json({ success: true, message: 'Course created.', courseId: result.insertId });
 }));
 
 app.patch('/api/courses/:id', authenticate, authorize('trainer', 'administrator'), asyncRoute(async (req, res) => {
-  const [existing] = await pool.execute('SELECT id, created_by FROM courses WHERE id = ?', [req.params.id]);
+  const [existing] = await pool.execute('SELECT id, created_by, status, title FROM courses WHERE id = ?', [req.params.id]);
   if (!existing.length) throw fail(404, 'Course not found.');
   if (req.user.role === 'trainer' && existing[0].created_by !== req.user.id) throw fail(403, 'You can update only your own courses.');
   const allowed = ['title', 'description', 'category', 'status', 'difficulty', 'duration', 'max_learners', 'objectives'];
@@ -305,6 +315,9 @@ app.patch('/api/courses/:id', authenticate, authorize('trainer', 'administrator'
   if (!sets.length) throw fail(400, 'No course fields to update.');
   values.push(req.params.id);
   await pool.execute(`UPDATE courses SET ${sets.join(', ')} WHERE id = ?`, values);
+  if (req.body.status === 'published' && existing[0].status !== 'published') {
+    await notifyEveryone('Course published', `${existing[0].title} is now available.`, 'Course', req.user.id);
+  }
   res.json({ success: true, message: 'Course updated.' });
 }));
 
@@ -510,6 +523,7 @@ app.post('/api/resources/upload', authenticate, authorize('trainer', 'administra
       'INSERT INTO resources (course_id, module_id, title, description, file_url, resource_type, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [course_id, module_id, title, description, publicPath, resource_type, req.user.id]
     );
+    await notifyEveryone('New learning resource added', `${title} was added to a course module.`, 'Resource', req.user.id);
     res.status(201).json({ success: true, message: 'File uploaded and assigned to the selected module.', resourceId: result.insertId, file_url: publicPath });
   } catch (error) {
     fs.unlink(path.join(uploadDirectory, req.file.filename), () => {});
@@ -533,6 +547,7 @@ app.post('/api/resources', authenticate, authorize('trainer', 'administrator'), 
     'INSERT INTO resources (course_id, module_id, title, description, file_url, resource_type, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [course_id, module_id, title, description, file_url, resource_type, req.user.id]
   );
+  await notifyEveryone('New learning resource added', `${title} was added to a course module.`, 'Resource', req.user.id);
   res.status(201).json({ success: true, resourceId: result.insertId, message: 'Resource added and assigned to the selected module.' });
 }));
 
@@ -617,10 +632,37 @@ app.get('/api/competencies', authenticate, asyncRoute(async (req, res) => {
   sendRows(res, 'competencies', rows);
 }));
 
+app.get('/api/competencies/summary', authenticate, authorize('trainer', 'administrator'), asyncRoute(async (req, res) => {
+  const trainerFilter = req.user.role === 'trainer' ? ' WHERE c.created_by = ?' : '';
+  const values = req.user.role === 'trainer' ? [req.user.id] : [];
+  const [[summary]] = await pool.execute(
+    `SELECT COUNT(DISTINCT cp.id) AS competencies,
+            COUNT(DISTINCT CASE WHEN s.marks_obtained IS NOT NULL THEN s.trainee_id END) AS learners_assessed,
+            AVG(CASE WHEN s.marks_obtained IS NOT NULL AND a.total_marks > 0
+                     THEN (s.marks_obtained / a.total_marks) * 100 END) AS average_level,
+            COUNT(DISTINCT CASE WHEN s.marks_obtained IS NOT NULL AND a.total_marks > 0
+                                  AND (s.marks_obtained / a.total_marks) * 100 < 60
+                                THEN CONCAT(cc.competency_id, ':', s.trainee_id) END) AS skill_gaps
+     FROM competencies cp
+     LEFT JOIN course_competencies cc ON cc.competency_id = cp.id
+     LEFT JOIN courses c ON c.id = cc.course_id
+     LEFT JOIN assessments a ON a.course_id = c.id
+     LEFT JOIN assessment_submissions s ON s.assessment_id = a.id${trainerFilter}`,
+    values
+  );
+  res.json({ success: true, summary: {
+    competencies: Number(summary.competencies || 0),
+    learners_assessed: Number(summary.learners_assessed || 0),
+    average_level: summary.average_level == null ? null : Number(summary.average_level),
+    skill_gaps: Number(summary.skill_gaps || 0)
+  } });
+}));
+
 app.post('/api/competencies', authenticate, authorize('trainer', 'administrator'), asyncRoute(async (req, res) => {
   const { name, description = '', category = '' } = req.body;
   if (!name) throw fail(400, 'Competency name is required.');
   const [result] = await pool.execute('INSERT INTO competencies (name, description, category, created_by) VALUES (?, ?, ?, ?)', [name, description, category, req.user.id]);
+  await notifyEveryone('New competency added', `${name} has been added to the competency framework.`, 'Competency', req.user.id);
   res.status(201).json({ success: true, competencyId: result.insertId });
 }));
 
@@ -758,6 +800,7 @@ app.post('/api/assessments', authenticate, authorize('trainer', 'administrator')
     'INSERT INTO assessments (course_id, title, instructions, total_marks, due_date, questions_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [course_id, title, instructions, total_marks, due_date || null, JSON.stringify(questions), req.user.id]
   );
+  await notifyEveryone('New assessment added', `${title} is available for the associated course.`, 'Assessment', req.user.id);
   res.status(201).json({ success: true, assessmentId: result.insertId });
 }));
 
@@ -838,7 +881,7 @@ app.patch('/api/assessments/submissions/:submissionId/grade', authenticate, auth
   const { marks_obtained, feedback = '' } = req.body;
   if (marks_obtained === undefined || !Number.isFinite(Number(marks_obtained)) || Number(marks_obtained) < 0) throw fail(400, 'Enter valid marks.');
   const [rows] = await pool.execute(
-    `SELECT s.id, a.total_marks, c.created_by FROM assessment_submissions s
+    `SELECT s.id, s.trainee_id, a.title AS assessment_title, a.total_marks, c.created_by FROM assessment_submissions s
      JOIN assessments a ON a.id = s.assessment_id JOIN courses c ON c.id = a.course_id WHERE s.id = ?`, [req.params.submissionId]
   );
   if (!rows.length) throw fail(404, 'Submission not found.');
@@ -848,19 +891,20 @@ app.patch('/api/assessments/submissions/:submissionId/grade', authenticate, auth
     'UPDATE assessment_submissions SET marks_obtained = ?, feedback = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?',
     [marks_obtained, feedback, req.user.id, req.params.submissionId]
   );
+  await notifyEveryone('Assessment result updated', `A submission for ${rows[0].assessment_title} has been reviewed and marks are available.`, 'Assessment', req.user.id);
   res.json({ success: true, message: 'Submission graded.' });
 }));
 
 // TRAINING PROGRAMS
 app.get('/api/programs', authenticate, asyncRoute(async (req, res) => {
   let sql = `SELECT p.id, p.title, p.description, p.goal, p.status, p.created_at,
-                    u.name AS created_by_name, COUNT(pc.course_id) AS course_count
-             FROM training_programs p JOIN users u ON u.id = p.created_by
-             LEFT JOIN program_courses pc ON pc.program_id = p.id`;
+                    u.name AS created_by_name,
+                    (SELECT COUNT(*) FROM program_courses pc WHERE pc.program_id = p.id) AS course_count
+             FROM training_programs p JOIN users u ON u.id = p.created_by`;
   const values = [];
   if (req.user.role === 'trainer') { sql += ' WHERE p.created_by = ?'; values.push(req.user.id); }
   if (req.user.role === 'trainee') { sql += " WHERE p.status = 'published'"; }
-  sql += ' GROUP BY p.id ORDER BY p.created_at DESC';
+  sql += ' ORDER BY p.created_at DESC';
   const [rows] = await pool.execute(sql, values);
   sendRows(res, 'programs', rows);
 }));
@@ -882,6 +926,7 @@ app.post('/api/programs', authenticate, authorize('trainer', 'administrator'), a
     const [result] = await conn.execute('INSERT INTO training_programs (title, description, goal, status, created_by) VALUES (?, ?, ?, ?, ?)', [title, description, goal, status, req.user.id]);
     for (const courseId of uniqueCourseIds) await conn.execute('INSERT INTO program_courses (program_id, course_id) VALUES (?, ?)', [result.insertId, courseId]);
     await conn.commit();
+    if (status === 'published') await notifyEveryone('New training program published', `${title} is now available.`, 'Training', req.user.id);
     res.status(201).json({ success: true, programId: result.insertId });
   } catch (error) { await conn.rollback(); throw error; }
   finally { conn.release(); }
@@ -1028,19 +1073,54 @@ app.get('/api/progress/courses', authenticate, authorize('trainer', 'administrat
 }));
 
 app.get('/api/reports/summary', authenticate, authorize('trainer', 'administrator'), asyncRoute(async (req, res) => {
-  const condition = req.user.role === 'trainer' ? ' WHERE created_by = ?' : '';
-  const args = req.user.role === 'trainer' ? [req.user.id] : [];
-  const [[courseStats]] = await pool.execute(`SELECT COUNT(*) AS courses, SUM(status = 'published') AS published FROM courses${condition}`, args);
+  const isTrainer = req.user.role === 'trainer';
+  const courseWhere = isTrainer ? ' WHERE created_by = ?' : '';
+  const courseArgs = isTrainer ? [req.user.id] : [];
+  const courseScope = isTrainer ? ' WHERE c.created_by = ?' : '';
+  const scopeArgs = isTrainer ? [req.user.id] : [];
+
+  const [[courseStats]] = await pool.execute(
+    `SELECT COUNT(*) AS courses, COALESCE(SUM(status = 'published'), 0) AS published FROM courses${courseWhere}`,
+    courseArgs
+  );
   const [[learnerStats]] = await pool.execute(
-    `SELECT COUNT(DISTINCT e.trainee_id) AS learners FROM enrollments e JOIN courses c ON c.id = e.course_id${req.user.role === 'trainer' ? ' WHERE c.created_by = ?' : ''}`,
-    args
+    `SELECT COUNT(DISTINCT e.trainee_id) AS learners FROM enrollments e JOIN courses c ON c.id = e.course_id${courseScope}`,
+    scopeArgs
   );
   const [[assessmentStats]] = await pool.execute(
-    `SELECT COUNT(DISTINCT a.id) AS assessments, COUNT(s.id) AS submissions, AVG(s.marks_obtained) AS average_score
-     FROM assessments a JOIN courses c ON c.id = a.course_id LEFT JOIN assessment_submissions s ON s.assessment_id = a.id${req.user.role === 'trainer' ? ' WHERE c.created_by = ?' : ''}`,
-    args
+    `SELECT COUNT(DISTINCT a.id) AS assessments, COUNT(DISTINCT s.id) AS submissions,
+            AVG(CASE WHEN s.marks_obtained IS NOT NULL THEN s.marks_obtained END) AS average_score
+     FROM assessments a JOIN courses c ON c.id = a.course_id
+     LEFT JOIN assessment_submissions s ON s.assessment_id = a.id${courseScope}`,
+    scopeArgs
   );
-  res.json({ success: true, summary: { ...courseStats, ...learnerStats, ...assessmentStats } });
+  const programWhere = isTrainer ? ' WHERE created_by = ?' : '';
+  const [[programStats]] = await pool.execute(`SELECT COUNT(*) AS programs FROM training_programs${programWhere}`, courseArgs);
+  const [[competencyStats]] = await pool.execute(
+    `SELECT COUNT(DISTINCT cp.id) AS competencies,
+            COUNT(DISTINCT CASE WHEN s.marks_obtained IS NOT NULL THEN s.trainee_id END) AS learners_assessed,
+            AVG(CASE WHEN s.marks_obtained IS NOT NULL AND a.total_marks > 0 THEN (s.marks_obtained / a.total_marks) * 100 END) AS average_level,
+            COUNT(DISTINCT CASE WHEN s.marks_obtained IS NOT NULL AND a.total_marks > 0 AND (s.marks_obtained / a.total_marks) * 100 < 60
+                                THEN CONCAT(cc.competency_id, ':', s.trainee_id) END) AS skill_gaps
+     FROM competencies cp LEFT JOIN course_competencies cc ON cc.competency_id = cp.id
+     LEFT JOIN courses c ON c.id = cc.course_id LEFT JOIN assessments a ON a.course_id = c.id
+     LEFT JOIN assessment_submissions s ON s.assessment_id = a.id${isTrainer ? ' WHERE c.created_by = ?' : ''}`,
+    scopeArgs
+  );
+  const [[completionStats]] = await pool.execute(
+    `SELECT CASE WHEN SUM(module_totals.total_modules) IS NULL OR SUM(module_totals.total_modules) = 0 THEN NULL
+                 ELSE ROUND(SUM(COALESCE(done.completed_modules, 0)) / SUM(module_totals.total_modules) * 100, 1) END AS completion_rate
+     FROM enrollments e JOIN courses c ON c.id = e.course_id
+     JOIN (SELECT course_id, COUNT(*) AS total_modules FROM course_modules GROUP BY course_id) module_totals ON module_totals.course_id = c.id
+     LEFT JOIN (SELECT cm.course_id, mc.trainee_id, COUNT(*) AS completed_modules
+                FROM module_completions mc JOIN course_modules cm ON cm.id = mc.module_id
+                GROUP BY cm.course_id, mc.trainee_id) done ON done.course_id = c.id AND done.trainee_id = e.trainee_id${courseScope}`,
+    scopeArgs
+  );
+  res.json({ success: true, summary: {
+    ...courseStats, ...learnerStats, ...assessmentStats, ...programStats,
+    ...competencyStats, completion_rate: completionStats.completion_rate == null ? null : Number(completionStats.completion_rate)
+  } });
 }));
 
 app.get('/api/dashboard', authenticate, asyncRoute(async (req, res) => {
